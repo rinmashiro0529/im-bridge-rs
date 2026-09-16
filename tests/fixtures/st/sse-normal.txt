@@ -1,0 +1,6 @@
+data: {"choices":[{"delta":{"content":"Synthetic"}}]}
+
+data: {"choices":[{"delta":{"content":" reply."}}]}
+
+data: [DONE]
+

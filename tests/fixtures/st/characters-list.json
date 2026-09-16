@@ -1,0 +1,11 @@
+[
+  {
+    "avatar": "SyntheticCharacter.png",
+    "name": "Synthetic Character",
+    "description": "A fixture-only character description.",
+    "personality": "Curious and patient.",
+    "scenario": "A test observatory with no production data.",
+    "first_mes": "Hello from the synthetic fixture.",
+    "mes_example": "<START>\n{{user}}: A fixture greeting.\n{{char}}: A fixture reply."
+  }
+]

@@ -1,0 +1,6 @@
+data: {"choices":[{"delta":{"content":"partial"}}]}
+
+data: {not-json}
+
+data: [DONE]
+

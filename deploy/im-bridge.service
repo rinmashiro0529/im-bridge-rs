@@ -1,0 +1,42 @@
+[Unit]
+Description=IM Bridge Telegram-to-SillyTavern Sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=imbridge
+Group=imbridge
+WorkingDirectory=/var/lib/im-bridge
+ExecStart=/usr/local/bin/im-bridge serve
+Environment=IMBRIDGE_DATA_DIR=/var/lib/im-bridge
+Environment=IMBRIDGE_MASTER_KEY_PATH=/etc/im-bridge/master.key
+Environment=IMBRIDGE_LISTEN=127.0.0.1:8787
+Environment=IMBRIDGE_COOKIE_SECURE=true
+Environment=IMBRIDGE_TELEGRAM_API_BASE=https://api.telegram.org
+Environment=IMBRIDGE_ST_BASE_URL=http://127.0.0.1:18000
+Environment=IMBRIDGE_ST_HANDLE=default-user
+Environment=IMBRIDGE_ST_MODE=read_only
+EnvironmentFile=-/etc/im-bridge/im-bridge.env
+Environment=RUST_LOG=info
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/im-bridge
+ReadOnlyPaths=/etc/im-bridge/master.key -/etc/im-bridge/im-bridge.env
+
+[Install]
+WantedBy=multi-user.target

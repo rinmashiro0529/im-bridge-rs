@@ -1,0 +1,6 @@
+{
+  "data": [
+    {"id": "synthetic-model", "owned_by": "synthetic-provider"},
+    {"id": "synthetic-compression-model", "owned_by": "synthetic-provider"}
+  ]
+}

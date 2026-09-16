@@ -1,0 +1,5 @@
+{
+  "settings": "{\"username\":\"Synthetic User\",\"oai_settings\":{\"chat_completion_source\":\"synthetic\",\"custom_model\":\"synthetic-model\",\"custom_url\":\"https://synthetic.invalid/provider\",\"custom_prompt_post_processing\":\"merge_tools\",\"temp_openai\":0.7,\"top_p_openai\":0.9,\"openai_max_tokens\":256}}",
+  "presets": [],
+  "world_names": []
+}
