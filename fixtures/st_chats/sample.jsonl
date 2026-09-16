@@ -1,0 +1,4 @@
+{"user_name":"Alice","character_name":"TestChar","chat_metadata":{"integrity":"fixture-header","note_prompt":"","foreign_keep":true}}
+{"name":"TestChar","is_user":false,"is_system":false,"send_date":"2026-01-01T00:00:00.000Z","mes":"你好，Alice。我是TestChar。","extra":{"gen_id":1,"swipe":false}}
+{"name":"Alice","is_user":true,"is_system":false,"send_date":"2026-01-01T00:01:00.000Z","mes":"今晚港口很安静。","extra":{"custom_client":"ios"}}
+{"name":"TestChar","is_user":false,"is_system":false,"send_date":"2026-01-01T00:02:00.000Z","mes":"灯塔还亮着。风里有盐。","extra":{"display_text":"灯塔还亮着。","compressed":true}}

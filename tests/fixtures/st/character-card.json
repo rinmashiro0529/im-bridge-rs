@@ -1,0 +1,20 @@
+{
+  "name": "Synthetic Character",
+  "description": "A fixture-only character description.",
+  "personality": "Curious and patient.",
+  "scenario": "A test observatory with no production data.",
+  "first_mes": "Hello from the synthetic fixture.",
+  "mes_example": "<START>\n{{user}}: A fixture greeting.\n{{char}}: A fixture reply.",
+  "creatorcomment": "Synthetic fixture; not a production character card.",
+  "data": {
+    "name": "Synthetic Character",
+    "description": "A fixture-only character description.",
+    "personality": "Curious and patient.",
+    "scenario": "A test observatory with no production data.",
+    "first_mes": "Hello from the synthetic fixture.",
+    "mes_example": "<START>\n{{user}}: A fixture greeting.\n{{char}}: A fixture reply.",
+    "synthetic_extension": {"enabled": true}
+  },
+  "spec": "chara_card_v2",
+  "spec_version": "2.0"
+}

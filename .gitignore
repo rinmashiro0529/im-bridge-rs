@@ -1,0 +1,42 @@
+/target/
+/.codex/
+/data/
+/tmp/
+
+# Databases, backups, runtime output
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.bak
+*.backup
+*.log
+coverage/
+lcov.info
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+master.key
+master.key.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+config.json
+config.local.json
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+**/*.rs.bk
+
+# Python helper caches
+__pycache__/
+*.pyc
