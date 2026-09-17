@@ -10,13 +10,17 @@ use im_bridge::domain::identity::{Account, Actor};
 use im_bridge::modules::telegram::dispatch::dispatch_update;
 use serde_json::{json, Value};
 use tower::ServiceExt;
+use zeroize::Zeroizing;
 
-const PASSWORD: &str = "synthetic-password-only";
+fn test_password() -> Zeroizing<String> {
+    Zeroizing::new(uuid::Uuid::new_v4().to_string())
+}
 
 struct Fixture {
     _dir: tempfile::TempDir,
     state: Arc<AppState>,
     admin: Actor,
+    password: Zeroizing<String>,
 }
 
 async fn setup() -> Fixture {
@@ -31,9 +35,10 @@ async fn setup() -> Fixture {
         st: StClientConfig::default(),
     };
     let state = Arc::new(AppState::bootstrap(config, true).await.unwrap());
+    let password = test_password();
     let account = state
         .identity
-        .bootstrap_admin("fixture-admin", PASSWORD, "Fixture Admin")
+        .bootstrap_admin("fixture-admin", &password, "Fixture Admin")
         .await
         .unwrap();
     let workspace = state
@@ -50,6 +55,7 @@ async fn setup() -> Fixture {
         _dir: dir,
         state,
         admin,
+        password,
     }
 }
 
@@ -84,9 +90,10 @@ async fn bootstrap_is_idempotent_without_resetting_password_or_defaults() {
     let fixture = setup().await;
     let state = &fixture.state;
     let before = row_counts(state).await;
+    let other_password = Zeroizing::new(format!("{}-different", fixture.password.as_str()));
     let repeated = state
         .identity
-        .bootstrap_admin("fixture-admin", "different-password-only", "Different Name")
+        .bootstrap_admin("fixture-admin", &other_password, "Different Name")
         .await
         .unwrap();
     assert_eq!(repeated.id, fixture.admin.account.id);
@@ -98,12 +105,12 @@ async fn bootstrap_is_idempotent_without_resetting_password_or_defaults() {
     );
     assert!(state
         .identity
-        .authenticate("fixture-admin", PASSWORD)
+        .authenticate("fixture-admin", &fixture.password)
         .await
         .is_ok());
     assert!(state
         .identity
-        .authenticate("fixture-admin", "different-password-only")
+        .authenticate("fixture-admin", &other_password)
         .await
         .is_err());
 }
@@ -121,7 +128,7 @@ async fn bootstrap_rejects_disabled_or_non_admin_accounts_without_promoting_them
         let before = row_counts(state).await;
         let error = state
             .identity
-            .bootstrap_admin("fixture-admin", PASSWORD, "Replacement")
+            .bootstrap_admin("fixture-admin", &fixture.password, "Replacement")
             .await
             .unwrap_err();
         assert_eq!(error.code, "BOOTSTRAP_ACCOUNT_CONFLICT", "{change}");
@@ -149,7 +156,7 @@ async fn bootstrap_detects_incomplete_workspaces_without_silent_repair() {
         let before = row_counts(state).await;
         let error = state
             .identity
-            .bootstrap_admin("fixture-admin", PASSWORD, "Fixture Admin")
+            .bootstrap_admin("fixture-admin", &fixture.password, "Fixture Admin")
             .await
             .unwrap_err();
         assert_eq!(error.code, "BOOTSTRAP_INCOMPLETE", "{damage}");
@@ -169,12 +176,18 @@ async fn provision(fixture: &Fixture, mode: Provisioning) -> im_bridge::AppResul
     match mode {
         Provisioning::Bootstrap => {
             identity
-                .bootstrap_admin("new-user", PASSWORD, "New User")
+                .bootstrap_admin("new-user", &fixture.password, "New User")
                 .await
         }
         Provisioning::Create => {
             identity
-                .create_account(&fixture.admin, "new-user", PASSWORD, "New User", false)
+                .create_account(
+                    &fixture.admin,
+                    "new-user",
+                    &fixture.password,
+                    "New User",
+                    false,
+                )
                 .await
         }
         Provisioning::Import => identity
@@ -262,12 +275,12 @@ async fn concurrent_bootstrap_never_leaves_partial_or_duplicate_accounts() {
     let fixture = setup().await;
     let identity = &fixture.state.identity;
     let (left, right) = tokio::join!(
-        identity.bootstrap_admin("concurrent-user", PASSWORD, "Concurrent"),
-        identity.bootstrap_admin("concurrent-user", PASSWORD, "Concurrent"),
+        identity.bootstrap_admin("concurrent-user", &fixture.password, "Concurrent"),
+        identity.bootstrap_admin("concurrent-user", &fixture.password, "Concurrent"),
     );
     assert!(left.is_ok() || right.is_ok());
     let account = identity
-        .bootstrap_admin("concurrent-user", PASSWORD, "Concurrent")
+        .bootstrap_admin("concurrent-user", &fixture.password, "Concurrent")
         .await
         .unwrap();
     for result in [left, right].into_iter().flatten() {
@@ -291,7 +304,7 @@ async fn authorization_reloads_account_status_and_admin_role_from_storage() {
             .create_account(
                 &fixture.admin,
                 "forbidden-user",
-                PASSWORD,
+                &fixture.password,
                 "Forbidden",
                 false,
             )
@@ -309,7 +322,7 @@ async fn authorization_reloads_account_status_and_admin_role_from_storage() {
     }
 }
 
-async fn login_cookie(app: &axum::Router, username: &str) -> String {
+async fn login_cookie(app: &axum::Router, username: &str, password: &str) -> String {
     let csrf = app
         .clone()
         .oneshot(
@@ -340,7 +353,7 @@ async fn login_cookie(app: &axum::Router, username: &str) -> String {
                 .header("x-csrf-token", payload["token"].as_str().unwrap())
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    json!({"username": username, "password": PASSWORD}).to_string(),
+                    json!({"username": username, "password": password}).to_string(),
                 ))
                 .unwrap(),
         )
@@ -366,7 +379,7 @@ async fn disabled_admins_and_members_are_denied_on_http_and_bound_telegram_paths
         } else {
             let account = state
                 .identity
-                .create_account(&fixture.admin, "reader", PASSWORD, "Reader", false)
+                .create_account(&fixture.admin, "reader", &fixture.password, "Reader", false)
                 .await
                 .unwrap();
             let workspace = state
@@ -412,7 +425,7 @@ async fn disabled_admins_and_members_are_denied_on_http_and_bound_telegram_paths
             .unwrap()
             .is_some());
         let app = router(state.clone());
-        let cookie = login_cookie(&app, &actor.account.username).await;
+        let cookie = login_cookie(&app, &actor.account.username, &fixture.password).await;
         sqlx::query("UPDATE accounts SET disabled_at = 'disabled' WHERE id = ?")
             .bind(&actor.account.id)
             .execute(&state.pool)
