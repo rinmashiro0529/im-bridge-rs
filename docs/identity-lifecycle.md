@@ -59,6 +59,14 @@ values, existing HTTP sessions and Telegram commands/callbacks for disabled
 administrators and members, re-enabling, revoked bindings and legacy defaults.
 Fixtures use temporary databases, synthetic identities and no real Telegram/ST.
 
+Passwords are generated independently for each fixture, held in a fixture-owned
+`Zeroizing<String>`, and passed explicitly to the in-process login helper. The
+repeated-bootstrap test uses a guaranteed-distinct alternate value and still
+asserts that the original password works while the alternate password does not.
+There is no shared hard-coded password. This test-data correction retains all
+eight test cases and their assertions; it does not suppress CodeQL rules, exclude
+the tests from analysis, or change production authentication behavior.
+
 Run the normal contribution gates and:
 
 ```sh
