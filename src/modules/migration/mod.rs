@@ -196,10 +196,14 @@ impl LegacyImporter {
         } else {
             "NULL AS st_user_handle"
         };
-        let account_sql = format!(
-            "SELECT account_id, display_name, {st_handle_expr} FROM accounts ORDER BY created_at"
-        );
-        let account_rows = sqlx::query(&account_sql).fetch_all(&legacy).await?;
+        // Both fragments are compile-time choices, never legacy database contents.
+        let account_rows =
+            sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT account_id, display_name, ")
+                .push(st_handle_expr)
+                .push(" FROM accounts ORDER BY created_at")
+                .build()
+                .fetch_all(&legacy)
+                .await?;
         let mut account_specs = Vec::new();
         for row in account_rows {
             let old_id: String = row.try_get("account_id")?;
@@ -242,12 +246,21 @@ impl LegacyImporter {
                 "'{}' AS tg_advanced_json",
             )
             .await?;
-            let config_sql = format!(
-                "SELECT account_id, telegram_bot_token, telegram_allowed_user_ids,
-                        {inter_delay}, {stream_interval}, {stream_delta}, {advanced}
-                 FROM account_configs"
-            );
-            sqlx::query(&config_sql).fetch_all(&legacy).await?
+            // optional_column only accepts static identifiers and fallback expressions.
+            sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                "SELECT account_id, telegram_bot_token, telegram_allowed_user_ids, ",
+            )
+            .push(inter_delay)
+            .push(", ")
+            .push(stream_interval)
+            .push(", ")
+            .push(stream_delta)
+            .push(", ")
+            .push(advanced)
+            .push(" FROM account_configs")
+            .build()
+            .fetch_all(&legacy)
+            .await?
         } else {
             report
                 .warnings
@@ -925,13 +938,13 @@ async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> AppResul
 async fn optional_column(
     pool: &SqlitePool,
     table: &str,
-    column: &str,
-    fallback: &str,
-) -> AppResult<String> {
+    column: &'static str,
+    fallback: &'static str,
+) -> AppResult<&'static str> {
     Ok(if column_exists(pool, table, column).await? {
-        column.to_string()
+        column
     } else {
-        fallback.to_string()
+        fallback
     })
 }
 

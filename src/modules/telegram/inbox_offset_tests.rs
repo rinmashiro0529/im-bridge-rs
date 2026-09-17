@@ -8,7 +8,7 @@ use tempfile::TempDir;
 const BOT: &str = "inbox-test-bot";
 const NOW: &str = "2000-01-01T00:00:00Z";
 
-async fn fixture() -> (TempDir, SqlitePool) {
+pub(super) async fn fixture() -> (TempDir, SqlitePool) {
     let dir = tempfile::tempdir().unwrap();
     let pool = connect_pool(&dir.path().join("app.db")).await.unwrap();
     migrate(&pool).await.unwrap();

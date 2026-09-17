@@ -120,8 +120,11 @@ async fn bootstrap_rejects_disabled_or_non_admin_accounts_without_promoting_them
     for change in ["disabled_at = 'disabled'", "is_system_admin = 0"] {
         let fixture = setup().await;
         let state = &fixture.state;
-        sqlx::query(&format!("UPDATE accounts SET {change} WHERE id = ?"))
-            .bind(&fixture.admin.account.id)
+        sqlx::QueryBuilder::<sqlx::Sqlite>::new("UPDATE accounts SET ")
+            .push(change)
+            .push(" WHERE id = ")
+            .push_bind(&fixture.admin.account.id)
+            .build()
             .execute(&state.pool)
             .await
             .unwrap();
@@ -214,10 +217,12 @@ async fn every_provisioning_entry_rolls_back_each_insert_failure_and_can_retry()
             let state = &fixture.state;
             let before = row_counts(state).await;
             // All identifiers come from the fixed list above, never from user input.
-            sqlx::query(&format!(
-                "CREATE TRIGGER fail_provision AFTER INSERT ON {table}
-                 BEGIN SELECT RAISE(ABORT, 'synthetic provisioning failure'); END"
-            ))
+            sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                "CREATE TRIGGER fail_provision AFTER INSERT ON ",
+            )
+            .push(table)
+            .push(" BEGIN SELECT RAISE(ABORT, 'synthetic provisioning failure'); END")
+            .build()
             .execute(&state.pool)
             .await
             .unwrap();
@@ -294,8 +299,11 @@ async fn authorization_reloads_account_status_and_admin_role_from_storage() {
     for change in ["disabled_at = 'disabled'", "is_system_admin = 0"] {
         let fixture = setup().await;
         let state = &fixture.state;
-        sqlx::query(&format!("UPDATE accounts SET {change} WHERE id = ?"))
-            .bind(&fixture.admin.account.id)
+        sqlx::QueryBuilder::<sqlx::Sqlite>::new("UPDATE accounts SET ")
+            .push(change)
+            .push(" WHERE id = ")
+            .push_bind(&fixture.admin.account.id)
+            .build()
             .execute(&state.pool)
             .await
             .unwrap();
