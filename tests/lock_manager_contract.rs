@@ -36,13 +36,11 @@ macro_rules! lock_contract {
                 let first = manager.acquire(key("one")).await.unwrap();
                 let mut waiter = Box::pin(manager.acquire(key("one")));
                 assert!(matches!(futures_util::poll!(&mut waiter), Poll::Pending));
-                let other = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    manager.acquire(key("two")),
-                )
-                .await
-                .expect("unrelated key blocked")
-                .unwrap();
+                let other =
+                    tokio::time::timeout(Duration::from_secs(2), manager.acquire(key("two")))
+                        .await
+                        .expect("unrelated key blocked")
+                        .unwrap();
                 assert_eq!(manager.len().await, 2);
                 assert_eq!(manager.active_count().await, 2);
                 drop(first);
@@ -107,13 +105,11 @@ macro_rules! lock_contract {
                 let left = $manager::new(1, Duration::ZERO);
                 let right = $manager::new(1, Duration::ZERO);
                 let first = left.acquire(key("same")).await.unwrap();
-                let second = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    right.acquire(key("same")),
-                )
-                .await
-                .expect("independent manager shared a lock")
-                .unwrap();
+                let second =
+                    tokio::time::timeout(Duration::from_secs(2), right.acquire(key("same")))
+                        .await
+                        .expect("independent manager shared a lock")
+                        .unwrap();
                 drop(first);
                 assert_eq!(left.prune().await, 1);
                 assert_eq!(right.prune().await, 0);
