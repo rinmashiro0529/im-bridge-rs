@@ -1,0 +1,57 @@
+name: Audit round 2 validation
+on:
+  push:
+    branches: [audit/round2-validation-20260917]
+permissions:
+  contents: read
+concurrency:
+  group: audit-round2-validation
+  cancel-in-progress: false
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Integrate exact reviewed heads without touching remote branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'IM Bridge audit validation'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --detach 01d4fb24503adc74508c8a6e3b35facf05cc204b
+          for sha in \
+            6859535ad30e7bb0e91f1a3ca25a8ab40a762434 \
+            31d47578d074a19fbe8fa8be3fd49320435804b7 \
+            0fe3ce763735e97f4cfef30deb690e95c26f8611 \
+            fccb94ce798a3a01ff23809490233089938023ae \
+            3c87e51393c35840edc86e076af637b7eff20541 \
+            3bdbebe6aef57b146df0a74d10a2f9c1aed9f9fe \
+            912b2cb8d8f24a7dda6f3b11b938f760e5eaf909; do
+            git fetch --no-tags origin "$sha"
+            git merge --no-ff --no-edit "$sha"
+          done
+          mkdir -p "$RUNNER_TEMP/audit-evidence"
+          git bundle create "$RUNNER_TEMP/audit-evidence/integrated.git.bundle" HEAD
+          git log --format='%H %s' > "$RUNNER_TEMP/audit-evidence/commits.txt"
+          git diff --stat 01d4fb24503adc74508c8a6e3b35facf05cc204b HEAD > "$RUNNER_TEMP/audit-evidence/diff-stat.txt"
+          git status --porcelain
+      - name: Export source for offline review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: round2-integrated-source
+          path: ${{ runner.temp }}/audit-evidence
+          retention-days: 7
+          if-no-files-found: error
+      - name: Baseline combined quality checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          python3 scripts/publication_gate.py
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+          cargo test --workspace --locked
+          cargo build --release --locked
