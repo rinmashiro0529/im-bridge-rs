@@ -12,6 +12,16 @@ const ARGON2_M_KIB: u32 = 19 * 1024;
 const ARGON2_T: u32 = 2;
 const ARGON2_P: u32 = 1;
 
+struct AccountSeed<'a> {
+    username: &'a str,
+    password: &'a str,
+    display_name: &'a str,
+    is_admin: bool,
+    workspace_name: &'a str,
+    prompt_user_name: &'a str,
+    legacy_st_handle: Option<&'a str>,
+}
+
 #[derive(Clone)]
 pub struct IdentityModule {
     pool: SqlitePool,
@@ -95,53 +105,47 @@ impl IdentityModule {
     ) -> AppResult<Account> {
         Self::validate_account_fields(username, password, display_name)?;
         if let Some(existing) = self.get_by_username(username).await? {
+            if !existing.is_system_admin || existing.disabled_at.is_some() {
+                return Err(AppError::conflict(
+                    "BOOTSTRAP_ACCOUNT_CONFLICT",
+                    "existing account is not an enabled administrator; bootstrap does not change roles or passwords",
+                ));
+            }
+            let complete: i64 = sqlx::query_scalar(
+                "SELECT EXISTS (
+                    SELECT 1 FROM workspace_members m
+                    JOIN workspaces w ON w.id = m.workspace_id
+                    JOIN workspace_settings s ON s.workspace_id = w.id
+                    WHERE m.account_id = ? AND m.role = 'owner' AND w.created_by = m.account_id
+                      AND m.workspace_id = (
+                          SELECT workspace_id FROM workspace_members
+                          WHERE account_id = ? ORDER BY created_at LIMIT 1
+                      )
+                 )",
+            )
+            .bind(&existing.id)
+            .bind(&existing.id)
+            .fetch_one(&self.pool)
+            .await?;
+            if complete == 0 {
+                return Err(AppError::conflict(
+                    "BOOTSTRAP_INCOMPLETE",
+                    "administrator has an incomplete default workspace; restore a consistent backup before retrying",
+                ));
+            }
             return Ok(existing);
         }
-        let id = new_id();
-        let now = now_rfc3339();
-        let hash = Self::hash_password(password)?;
-        sqlx::query(
-            "INSERT INTO accounts (id, username, display_name, password_hash, is_system_admin, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 1, ?, ?)",
-        )
-        .bind(&id)
-        .bind(username)
-        .bind(display_name)
-        .bind(&hash)
-        .bind(&now)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        let workspace_id = new_id();
-        sqlx::query(
-            "INSERT INTO workspaces (id, name, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(&workspace_id)
-        .bind("Default")
-        .bind(&id)
-        .bind(&now)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO workspace_members (workspace_id, account_id, role, created_at) VALUES (?, ?, 'owner', ?)",
-        )
-        .bind(&workspace_id)
-        .bind(&id)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO workspace_settings (workspace_id, prompt_user_name, default_prompt_profile, updated_at)
-             VALUES (?, 'User', 'legacy_bridge_v1', ?)",
-        )
-        .bind(&workspace_id)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        self.get_by_id(&id)
-            .await?
-            .ok_or_else(|| AppError::internal("bootstrap account missing"))
+        self.provision_account(AccountSeed {
+            username,
+            password,
+            display_name,
+            is_admin: true,
+            workspace_name: "Default",
+            prompt_user_name: "User",
+            legacy_st_handle: None,
+        })
+        .await
+        .map(|(account, _)| account)
     }
 
     pub async fn create_account(
@@ -152,24 +156,43 @@ impl IdentityModule {
         display_name: &str,
         is_admin: bool,
     ) -> AppResult<Account> {
-        if !actor.account.is_system_admin {
+        let account = self.active_account(&actor.account.id).await?;
+        if !account.is_system_admin {
             return Err(AppError::forbidden("only system admin can create accounts"));
         }
         Self::validate_account_fields(username, password, display_name)?;
+        self.provision_account(AccountSeed {
+            username,
+            password,
+            display_name,
+            is_admin,
+            workspace_name: display_name,
+            prompt_user_name: display_name,
+            legacy_st_handle: None,
+        })
+        .await
+        .map(|(account, _)| account)
+    }
+
+    // Hash before taking a write transaction. Every dependent row, including a
+    // new legacy handle, is committed together; no post-commit lookup can fail.
+    async fn provision_account(&self, seed: AccountSeed<'_>) -> AppResult<(Account, String)> {
         let id = new_id();
-        let now = now_rfc3339();
-        let hash = Self::hash_password(password)?;
         let workspace_id = new_id();
+        let now = now_rfc3339();
+        let hash = Self::hash_password(seed.password)?;
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO accounts (id, username, display_name, password_hash, is_system_admin, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO accounts
+                (id, username, display_name, password_hash, is_system_admin, legacy_st_handle, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
-        .bind(username)
-        .bind(display_name)
+        .bind(seed.username)
+        .bind(seed.display_name)
         .bind(&hash)
-        .bind(i64::from(is_admin))
+        .bind(i64::from(seed.is_admin))
+        .bind(seed.legacy_st_handle)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -179,7 +202,7 @@ impl IdentityModule {
              VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&workspace_id)
-        .bind(display_name)
+        .bind(seed.workspace_name)
         .bind(&id)
         .bind(&now)
         .bind(&now)
@@ -200,14 +223,22 @@ impl IdentityModule {
              VALUES (?, ?, 'legacy_bridge_v1', ?)",
         )
         .bind(&workspace_id)
-        .bind(display_name)
+        .bind(seed.prompt_user_name)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        self.get_by_id(&id)
-            .await?
-            .ok_or_else(|| AppError::internal("created account missing"))
+        Ok((
+            Account {
+                id,
+                username: seed.username.to_string(),
+                display_name: seed.display_name.to_string(),
+                is_system_admin: seed.is_admin,
+                disabled_at: None,
+                legacy_st_handle: seed.legacy_st_handle.map(ToOwned::to_owned),
+            },
+            workspace_id,
+        ))
     }
 
     pub async fn authenticate(&self, username: &str, password: &str) -> AppResult<Account> {
@@ -269,11 +300,24 @@ impl IdentityModule {
         Ok(rows.into_iter().map(AccountRow::into_account).collect())
     }
 
+    // Account values held by callers are snapshots, not authorization grants.
+    async fn active_account(&self, id: &str) -> AppResult<Account> {
+        let account = self
+            .get_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::unauthorized("login required"))?;
+        if account.disabled_at.is_some() {
+            return Err(AppError::forbidden("account disabled"));
+        }
+        Ok(account)
+    }
+
     pub async fn actor_in_workspace(
         &self,
         account: Account,
         workspace_id: &str,
     ) -> AppResult<Actor> {
+        let account = self.active_account(&account.id).await?;
         if account.is_system_admin {
             return Ok(Actor {
                 account,
@@ -326,80 +370,27 @@ impl IdentityModule {
             return Ok((existing.into_account(), workspace));
         }
         if let Some(existing) = self.get_by_username(handle).await? {
+            let workspace = self.default_workspace_id(&existing.id).await?;
             sqlx::query("UPDATE accounts SET legacy_st_handle = ?, updated_at = ? WHERE id = ?")
                 .bind(handle)
                 .bind(now_rfc3339())
                 .bind(&existing.id)
                 .execute(&self.pool)
                 .await?;
-            let workspace = self.default_workspace_id(&existing.id).await?;
             return Ok((existing, workspace));
         }
-        let password = format!("imported-{}", new_id());
-        let account = self
-            .bootstrap_like_user(handle, &password, display_name)
-            .await?;
-        sqlx::query("UPDATE accounts SET legacy_st_handle = ? WHERE id = ?")
-            .bind(handle)
-            .bind(&account.id)
-            .execute(&self.pool)
-            .await?;
-        let workspace = self.default_workspace_id(&account.id).await?;
-        Ok((account, workspace))
-    }
-
-    async fn bootstrap_like_user(
-        &self,
-        username: &str,
-        password: &str,
-        display_name: &str,
-    ) -> AppResult<Account> {
-        let id = new_id();
-        let now = now_rfc3339();
-        let hash = Self::hash_password(password)?;
-        sqlx::query(
-            "INSERT INTO accounts (id, username, display_name, password_hash, is_system_admin, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 0, ?, ?)",
-        )
-        .bind(&id)
-        .bind(username)
-        .bind(display_name)
-        .bind(&hash)
-        .bind(&now)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        let workspace_id = new_id();
-        sqlx::query(
-            "INSERT INTO workspaces (id, name, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(&workspace_id)
-        .bind(display_name)
-        .bind(&id)
-        .bind(&now)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO workspace_members (workspace_id, account_id, role, created_at) VALUES (?, ?, 'owner', ?)",
-        )
-        .bind(&workspace_id)
-        .bind(&id)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO workspace_settings (workspace_id, prompt_user_name, default_prompt_profile, updated_at)
-             VALUES (?, ?, 'legacy_bridge_v1', ?)",
-        )
-        .bind(&workspace_id)
-        .bind(display_name)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        self.get_by_id(&id)
-            .await?
-            .ok_or_else(|| AppError::internal("imported account missing"))
+        // Preserve the importer's existing handle/display-name acceptance rules.
+        let password = zeroize::Zeroizing::new(format!("imported-{}", new_id()));
+        self.provision_account(AccountSeed {
+            username: handle,
+            password: &password,
+            display_name,
+            is_admin: false,
+            workspace_name: display_name,
+            prompt_user_name: display_name,
+            legacy_st_handle: Some(handle),
+        })
+        .await
     }
 
     async fn check_login_rate(&self, username: &str) -> AppResult<()> {
