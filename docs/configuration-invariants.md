@@ -15,7 +15,8 @@ The existing file-over-environment source policy, field names, CLI, public
 structs, HTTPS/loopback restrictions, cookie constraints, HMAC minimum length,
 and unknown-field rejection are unchanged. No environment overlay is introduced
 that could accidentally enable production writes or replace protected secrets.
-Numeric diagnostics do not echo supplied values, including invalid UTF-8.
+Environment numeric diagnostics do not echo supplied values, including invalid
+UTF-8. JSON deserialization diagnostics retain serde's existing behavior.
 
 `tests/config_contract.rs` checks direct/JSON final validation, real CLI child
 processes for both sources and inclusive boundaries, negative and overflowing

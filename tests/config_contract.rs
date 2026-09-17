@@ -83,7 +83,10 @@ fn omitted_or_partial_st_configuration_defaults_to_disabled() {
         assert!(config.st.connector_hmac_key.is_none());
     }
     let explicit_empty: StClientConfig = serde_json::from_value(json!({"mode": ""})).unwrap();
-    assert_eq!(explicit_empty.validate().unwrap_err().code, "CONFIG_INVALID");
+    assert_eq!(
+        explicit_empty.validate().unwrap_err().code,
+        "CONFIG_INVALID"
+    );
 }
 
 #[test]
@@ -102,10 +105,17 @@ fn final_validation_checks_directly_constructed_values_as_well_as_json() {
             }
             for config in [direct, from_json] {
                 let result = config.validate();
-                assert_eq!(result.is_ok(), (min..=max).contains(&value), "{field}/{value}");
+                assert_eq!(
+                    result.is_ok(),
+                    (min..=max).contains(&value),
+                    "{field}/{value}"
+                );
                 if let Err(error) = result {
                     assert_eq!(error.code, "CONFIG_INVALID");
-                    assert_eq!(error.message, format!("{env} must be between {min} and {max}"));
+                    assert_eq!(
+                        error.message,
+                        format!("{env} must be between {min} and {max}")
+                    );
                 }
             }
         }
@@ -129,7 +139,10 @@ fn actual_cli_enforces_identical_timeout_boundaries_for_environment_and_file() {
                 }
                 let output = command.output().unwrap();
                 if (min..=max).contains(&value) {
-                    assert!(output.status.success(), "{field}/{value}/{file_source}: {output:?}");
+                    assert!(
+                        output.status.success(),
+                        "{field}/{value}/{file_source}: {output:?}"
+                    );
                     assert!(String::from_utf8_lossy(&output.stdout).contains("database=ok"));
                 } else {
                     assert_invalid_without_side_effects(dir.path(), &output);
@@ -150,7 +163,9 @@ fn session_ttl_keeps_signed_parsing_and_inclusive_limits() {
             if file_source {
                 let mut config = document(dir.path(), json!({}));
                 config["session_ttl_hours"] = json!(value);
-                command.arg("--config").arg(write_config(dir.path(), &config));
+                command
+                    .arg("--config")
+                    .arg(write_config(dir.path(), &config));
             } else {
                 command.env("IMBRIDGE_SESSION_TTL_HOURS", value.to_string());
             }
@@ -166,7 +181,14 @@ fn session_ttl_keeps_signed_parsing_and_inclusive_limits() {
 
 #[test]
 fn malformed_environment_numbers_fail_without_echoing_the_input() {
-    for raw in ["", "-1", "1.5", " 100", "synthetic-sensitive-value", "18446744073709551616"] {
+    for raw in [
+        "",
+        "-1",
+        "1.5",
+        " 100",
+        "synthetic-sensitive-value",
+        "18446744073709551616",
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let output = doctor(dir.path())
             .env("IMBRIDGE_ST_TIMEOUT_MS", raw)
@@ -184,7 +206,10 @@ fn non_utf8_environment_numbers_have_a_stable_configuration_error() {
 
     let dir = tempfile::tempdir().unwrap();
     let output = doctor(dir.path())
-        .env("IMBRIDGE_ST_TIMEOUT_MS", std::ffi::OsString::from_vec(vec![0xff]))
+        .env(
+            "IMBRIDGE_ST_TIMEOUT_MS",
+            std::ffi::OsString::from_vec(vec![0xff]),
+        )
         .output()
         .unwrap();
     assert_invalid_without_side_effects(dir.path(), &output);
@@ -225,7 +250,9 @@ fn existing_security_and_unknown_field_guards_are_not_relaxed() {
         let config: AppConfig = serde_json::from_value(document(dir.path(), st)).unwrap();
         assert_eq!(config.validate().unwrap_err().code, "CONFIG_INVALID");
     }
-    assert!(serde_json::from_value::<AppConfig>(document(dir.path(), json!({"typo": true}))).is_err());
+    assert!(
+        serde_json::from_value::<AppConfig>(document(dir.path(), json!({"typo": true}))).is_err()
+    );
     let mut unknown = document(dir.path(), json!({}));
     unknown["typo"] = json!(true);
     assert!(serde_json::from_value::<AppConfig>(unknown).is_err());

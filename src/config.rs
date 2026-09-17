@@ -325,7 +325,11 @@ impl AppConfig {
                 "cookie_secure must be true when IMBRIDGE_LISTEN is not a loopback address",
             ));
         }
-        bounded_number("session_ttl_hours", Some(self.session_ttl_hours), SESSION_TTL_RANGE)?;
+        bounded_number(
+            "session_ttl_hours",
+            Some(self.session_ttl_hours),
+            SESSION_TTL_RANGE,
+        )?;
         self.st.validate()
     }
 
@@ -365,7 +369,11 @@ impl AppConfig {
                 std::env::var("IMBRIDGE_MASTER_KEY_PATH")
                     .unwrap_or_else(|_| "./master.key".to_string()),
             ),
-            session_ttl_hours: parse_env_number("IMBRIDGE_SESSION_TTL_HOURS", 12, SESSION_TTL_RANGE)?,
+            session_ttl_hours: parse_env_number(
+                "IMBRIDGE_SESSION_TTL_HOURS",
+                12,
+                SESSION_TTL_RANGE,
+            )?,
             cookie_secure: parse_env_bool("IMBRIDGE_COOKIE_SECURE", true)?,
             data_dir,
             st: StClientConfig::from_env()?,
