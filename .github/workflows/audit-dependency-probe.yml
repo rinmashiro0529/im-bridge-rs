@@ -1,0 +1,22 @@
+name: Audit dependency probe
+
+on:
+  push:
+    branches: [audit-work/dependency-probe-20260917]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Inspect references and resolved capabilities in an isolated worktree
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/dependency-probe" 01d4fb24503adc74508c8a6e3b35facf05cc204b
+          python3 .github/audit-work/dependency_probe.py "$RUNNER_TEMP/dependency-probe"
