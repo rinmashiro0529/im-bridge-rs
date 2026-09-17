@@ -1,0 +1,79 @@
+name: Audit unused dependency validation
+
+on:
+  push:
+    branches: [audit-work/dependency-verification-20260917]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Initialize isolated working paths
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/audit-dependency-target" >> "$GITHUB_ENV"
+          echo "CANDIDATE=$RUNNER_TEMP/audit-dependency-candidate" >> "$GITHUB_ENV"
+      - name: Prepare fixed-base candidate and record the original dependency graph
+        run: |
+          git worktree add --detach "$CANDIDATE" 01d4fb24503adc74508c8a6e3b35facf05cc204b
+          python3 .github/audit-work/dependency_driver.py prepare "$CANDIDATE"
+      - name: Verify original public transport and runtime compatibility tests
+        run: |
+          cd "$CANDIDATE"
+          cargo test --locked --test transport_dependency_contract
+      - name: Build, measure and smoke-test the original release
+        run: |
+          cd "$CANDIDATE"
+          cargo build --release --locked
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/dependency_driver.py" baseline "$CANDIDATE"
+      - name: Remove the unused crate while explicitly preserving transport features
+        run: python3 .github/audit-work/dependency_driver.py fix "$CANDIDATE"
+      - name: Format and validate the candidate without weakening quality gates
+        run: |
+          cd "$CANDIDATE"
+          cargo fmt --all
+          cargo fmt --all --check
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/dependency_driver.py" allowlist "$CANDIDATE"
+          git diff --check
+          python3 scripts/publication_gate.py
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Run the complete default-feature test suite
+        run: |
+          cd "$CANDIDATE"
+          cargo test --all --locked
+      - name: Build, measure and smoke-test the candidate under the same conditions
+        run: |
+          cd "$CANDIDATE"
+          cargo build --release --locked
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/dependency_driver.py" candidate "$CANDIDATE"
+      - name: Publish only the validated candidate branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$CANDIDATE"
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/dependency_driver.py" allowlist "$CANDIDATE"
+          git add -- Cargo.toml Cargo.lock deny.toml tests/transport_dependency_contract.rs docs/unused-telegram-dependency.md
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'build: remove unused teloxide while preserving resolved transport capabilities'
+          test "$(git rev-parse HEAD^)" = 01d4fb24503adc74508c8a6e3b35facf05cc204b
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          printf '::add-mask::%s\n' "$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push https://github.com/rinmashiro0529/im-bridge-rs.git HEAD:refs/heads/audit/remove-unused-teloxide
+          {
+            echo '## Validated candidate'
+            echo "Commit: $(git rev-parse HEAD)"
+            echo '```'
+            git show --stat --oneline HEAD
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
