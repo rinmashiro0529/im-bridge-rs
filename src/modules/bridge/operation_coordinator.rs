@@ -136,18 +136,7 @@ impl OperationCoordinator {
                 "operation payload key is unavailable",
             ));
         };
-        let Some(encrypted) = record.payload.as_ref() else {
-            return Err(crate::error::AppError::bad_request(
-                "PAYLOAD_MISSING",
-                "operation recovery payload is missing",
-            ));
-        };
-        if record.id.trim().is_empty() || record.bot_id.trim().is_empty() {
-            return Err(crate::error::AppError::bad_request(
-                "PAYLOAD_AAD_INVALID",
-                "operation payload identity is incomplete",
-            ));
-        }
+        let encrypted = Self::recovery_payload(record)?;
         if !fence.is_valid()
             || internal_bot_id.trim().is_empty()
             || internal_bot_id != record.bot_id
@@ -158,39 +147,7 @@ impl OperationCoordinator {
                 "operation payload runtime fence does not match the historical operation",
             ));
         }
-        let aad = OperationAad::new_with_fence(
-            record.id.clone(),
-            locator_hash(
-                &record.locator.handle,
-                &record.locator.avatar,
-                &record.locator.chat_file,
-            ),
-            record.operation_kind.clone(),
-            record.actor_id.clone(),
-            fence.clone(),
-        );
-        let plaintext = encryptor.decrypt(encrypted, &aad)?;
-        let payload: OperationRecoveryPayload =
-            serde_json::from_slice(&plaintext).map_err(|_| {
-                crate::error::AppError::bad_request(
-                    "PAYLOAD_RECOVERY_INVALID",
-                    "operation recovery payload is invalid",
-                )
-            })?;
-        payload.validate()?;
-        if let Some(expected_digest) = record.mutation_digest.as_deref() {
-            let actual = payload
-                .mutation()
-                .map(crate::modules::bridge::st_ops::mutation_digest)
-                .unwrap_or_else(|| hex::encode(sha2::Sha256::digest(&plaintext)));
-            if actual != expected_digest {
-                return Err(crate::error::AppError::conflict(
-                    "PAYLOAD_DIGEST_MISMATCH",
-                    "operation recovery payload digest mismatch",
-                ));
-            }
-        }
-        Ok(payload)
+        Self::decode_and_validate_recovery_payload(encryptor, record, encrypted, fence)
     }
 
     pub async fn decrypt_recovery_payload_for_operation(
@@ -201,6 +158,17 @@ impl OperationCoordinator {
         let encryptor = self
             .restore_payload_encryptor_for_operation(&record.id)
             .await?;
+        let encrypted = Self::recovery_payload(record)?;
+        if !fence.is_valid() || fence.internal_bot_id != record.bot_id {
+            return Err(crate::error::AppError::conflict(
+                "PAYLOAD_AAD_INVALID",
+                "operation recovery fence does not match the historical operation",
+            ));
+        }
+        Self::decode_and_validate_recovery_payload(&encryptor, record, encrypted, fence)
+    }
+
+    fn recovery_payload(record: &BridgeOperationRecord) -> AppResult<&EncryptedOperationPayload> {
         let Some(encrypted) = record.payload.as_ref() else {
             return Err(crate::error::AppError::bad_request(
                 "PAYLOAD_MISSING",
@@ -213,12 +181,16 @@ impl OperationCoordinator {
                 "operation payload identity is incomplete",
             ));
         }
-        if !fence.is_valid() || fence.internal_bot_id != record.bot_id {
-            return Err(crate::error::AppError::conflict(
-                "PAYLOAD_AAD_INVALID",
-                "operation recovery fence does not match the historical operation",
-            ));
-        }
+        Ok(encrypted)
+    }
+
+    // Entry points retain key-source and scope checks before this shared core.
+    fn decode_and_validate_recovery_payload(
+        encryptor: &OperationPayloadEncryptor,
+        record: &BridgeOperationRecord,
+        encrypted: &EncryptedOperationPayload,
+        fence: &PollerRuntimeFence,
+    ) -> AppResult<OperationRecoveryPayload> {
         let aad = OperationAad::new_with_fence(
             record.id.clone(),
             locator_hash(
