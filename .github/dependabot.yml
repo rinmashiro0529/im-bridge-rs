@@ -6,6 +6,8 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      rustcrypto-compatibility:
+        patterns: [hmac, sha2]
       cargo-minor-and-patch:
         update-types: [minor, patch]
   - package-ecosystem: github-actions
@@ -13,3 +15,6 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      codeql-family:
+        patterns: ["github/codeql-action*"]

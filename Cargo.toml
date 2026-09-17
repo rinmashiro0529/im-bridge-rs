@@ -34,16 +34,16 @@ hmac = "0.12"
 argon2 = "0.5"
 password-hash = { version = "0.5", features = ["std"] }
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
+# Preserve the TLS root sources and multipart support previously unified through teloxide.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots", "rustls-tls", "multipart"] }
 rmp-serde = "1"
 rust-embed = "8"
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "json"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "json"] }
 subtle = "2"
-teloxide = { version = "0.17", default-features = false, features = ["ctrlc_handler", "rustls"] }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 tokio = { version = "1", features = ["full"] }

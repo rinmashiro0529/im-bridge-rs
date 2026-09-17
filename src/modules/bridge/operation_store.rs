@@ -11,14 +11,21 @@ use crate::modules::bridge::operations::{
     BridgeOperationRecord, BridgeOperationStatus, EncryptedOperationPayload, OperationCommitState,
 };
 
-const SELECT_COLUMNS: &str =
-    "id, actor_id, bot_id, telegram_update_id, channel_context_key, operation_kind,
+// Only literal clauses are accepted; values continue to use bind parameters.
+macro_rules! select_operations {
+    ($tail:literal) => {
+        concat!(
+            "SELECT id, actor_id, bot_id, telegram_update_id, channel_context_key, operation_kind,
         st_handle, st_character_avatar, st_chat_file, status,
         source_sha256, source_integrity, source_size, message_count,
         operation_payload_ciphertext, operation_payload_nonce, operation_payload_key_version,
         mutation_digest, connector_result_json,
         error_stage, error_code, error_summary, retryable, commit_state, attempt_count,
-        request_id, trace_id, created_at, updated_at";
+        request_id, trace_id, created_at, updated_at FROM bridge_operations",
+            $tail
+        )
+    };
+}
 
 #[derive(Clone)]
 pub struct OperationStore {
@@ -640,8 +647,8 @@ impl OperationStore {
         }
         let limit = i64::try_from(limit.clamp(1, 256))
             .map_err(|_| AppError::internal("operation recovery limit is invalid"))?;
-        let rows = sqlx::query_as::<_, OperationRow>(&format!(
-            "SELECT {SELECT_COLUMNS} FROM bridge_operations
+        let rows = sqlx::query_as::<_, OperationRow>(select_operations!(
+            "
              WHERE bot_id = ?
                AND (
                    status IN ('generated', 'committing')
@@ -658,12 +665,10 @@ impl OperationStore {
     }
 
     pub async fn get_operation(&self, id: &str) -> AppResult<Option<BridgeOperationRecord>> {
-        let row = sqlx::query_as::<_, OperationRow>(&format!(
-            "SELECT {SELECT_COLUMNS} FROM bridge_operations WHERE id = ?"
-        ))
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query_as::<_, OperationRow>(select_operations!(" WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
         row.map(OperationRow::into_record).transpose()
     }
 
@@ -673,8 +678,8 @@ impl OperationStore {
         update_id: i64,
         kind: &str,
     ) -> AppResult<Option<BridgeOperationRecord>> {
-        let row = sqlx::query_as::<_, OperationRow>(&format!(
-            "SELECT {SELECT_COLUMNS} FROM bridge_operations
+        let row = sqlx::query_as::<_, OperationRow>(select_operations!(
+            "
              WHERE bot_id = ? AND telegram_update_id = ? AND operation_kind = ?"
         ))
         .bind(bot_id)
@@ -689,8 +694,8 @@ impl OperationStore {
         &self,
         status: BridgeOperationStatus,
     ) -> AppResult<Vec<BridgeOperationRecord>> {
-        let rows = sqlx::query_as::<_, OperationRow>(&format!(
-            "SELECT {SELECT_COLUMNS} FROM bridge_operations
+        let rows = sqlx::query_as::<_, OperationRow>(select_operations!(
+            "
              WHERE status = ? ORDER BY created_at ASC, id ASC"
         ))
         .bind(status.as_str())
@@ -700,8 +705,8 @@ impl OperationStore {
     }
 
     pub async fn list_unknown_commits(&self) -> AppResult<Vec<BridgeOperationRecord>> {
-        let rows = sqlx::query_as::<_, OperationRow>(&format!(
-            "SELECT {SELECT_COLUMNS} FROM bridge_operations
+        let rows = sqlx::query_as::<_, OperationRow>(select_operations!(
+            "
              WHERE status = 'committing' AND commit_state = 'unknown'
              ORDER BY created_at ASC, id ASC"
         ))

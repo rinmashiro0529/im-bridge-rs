@@ -33,6 +33,12 @@ pub mod panel;
 pub mod panel_store;
 pub mod stream;
 
+#[cfg(test)]
+mod inbox_offset_tests;
+
+#[cfg(test)]
+mod inbox_recovery_tests;
+
 const CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const CODE_LENGTH: usize = 6;
 
@@ -1212,6 +1218,28 @@ async fn poll_telegram_bot(
     cancel: CancellationToken,
     ownership_guard: Option<PollerOwnershipGuard>,
 ) -> AppResult<()> {
+    let api_base = telegram_api_base()?;
+    poll_telegram_bot_at(
+        module,
+        pool,
+        bot_id,
+        token,
+        cancel,
+        ownership_guard,
+        api_base,
+    )
+    .await
+}
+
+async fn poll_telegram_bot_at(
+    module: TelegramModule,
+    pool: SqlitePool,
+    bot_id: String,
+    token: String,
+    cancel: CancellationToken,
+    ownership_guard: Option<PollerOwnershipGuard>,
+    api_base: String,
+) -> AppResult<()> {
     let client = match telegram_http_client() {
         Ok(client) => client,
         Err(err) => {
@@ -1231,7 +1259,6 @@ async fn poll_telegram_bot(
             return Err(build_error);
         }
     };
-    let api_base = telegram_api_base()?;
     if let Err(err) =
         configure_telegram_bot(&module, &pool, &client, &api_base, &token, &bot_id).await
     {
@@ -1248,7 +1275,7 @@ async fn poll_telegram_bot(
             tracing::error!(bot_id, code = %err.code, "bridge operation recovery failed");
         }
     }
-    if let Err(err) = recover_pending_updates(
+    if let Err(err) = recover_startup_updates(
         &module,
         &pool,
         &client,
@@ -1261,6 +1288,7 @@ async fn poll_telegram_bot(
         tracing::error!(bot_id, code = %err.code, "telegram inbox recovery failed");
     }
     let mut next_recovery_at = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut next_inbox_recovery_at = tokio::time::Instant::now();
     while !cancel.is_cancelled() {
         if let Some(guard) = ownership_guard.as_ref() {
             if let Err(err) = guard.assert_valid().await {
@@ -1277,6 +1305,38 @@ async fn poll_telegram_bot(
                     tracing::error!(bot_id, code = %err.code, "bridge operation recovery failed");
                 }
                 next_recovery_at = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+            }
+        }
+        // Every previous batch is drained before this point. Do not reset
+        // processing rows here: a live or uncertain effect must not be stolen.
+        if tokio::time::Instant::now() >= next_inbox_recovery_at {
+            if let Err(err) = recover_pending_updates(
+                &module,
+                &pool,
+                &client,
+                &token,
+                &bot_id,
+                ownership_guard.as_ref(),
+            )
+            .await
+            {
+                tracing::error!(bot_id, code = %err.code, "telegram online inbox recovery failed");
+            }
+            next_inbox_recovery_at =
+                tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        }
+        // Ownership can change while recovery awaits storage or delivery work.
+        // Revalidate immediately before the next network poll so a stale owner
+        // never consumes another Telegram batch after detecting the takeover.
+        if let Some(guard) = ownership_guard.as_ref() {
+            if let Err(err) = guard.assert_valid().await {
+                tracing::warn!(
+                    bot_id,
+                    numeric_bot_id = guard.numeric_bot_id,
+                    error = %err,
+                    "poller ownership lost after inbox recovery; cancelling getUpdates"
+                );
+                break;
             }
         }
         let url = format!("{api_base}/bot{token}/getUpdates");
@@ -1410,6 +1470,7 @@ async fn persist_update_batch(
     let now = now_rfc3339();
     let mut tx = pool.begin().await?;
     let mut persisted = Vec::new();
+    let mut candidate_offset = *offset;
     for update in updates {
         let Some(update_id) = update.get("update_id").and_then(Value::as_i64) else {
             continue;
@@ -1464,7 +1525,7 @@ async fn persist_update_batch(
         let next_offset = update_id.checked_add(1).ok_or_else(|| {
             AppError::bad_request("TELEGRAM_UPDATE_ID_INVALID", "Telegram update id overflow")
         })?;
-        *offset = (*offset).max(next_offset);
+        candidate_offset = candidate_offset.max(next_offset);
     }
     sqlx::query(
         "INSERT INTO telegram_bot_offsets (bot_id, next_offset, updated_at)
@@ -1474,11 +1535,13 @@ async fn persist_update_batch(
             updated_at = excluded.updated_at",
     )
     .bind(bot_id)
-    .bind(*offset)
+    .bind(candidate_offset)
     .bind(&now)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    // Publish only after both inbox rows and the durable offset have committed.
+    *offset = candidate_offset;
     Ok(persisted)
 }
 
@@ -1663,7 +1726,9 @@ async fn recover_bridge_operations(
         .map(|operations| operations.len())
 }
 
-async fn recover_pending_updates(
+// Run once before spawning delivery tasks. Keep reset failures inside the
+// existing recoverable startup boundary; do not exit without poller cleanup.
+async fn recover_startup_updates(
     module: &TelegramModule,
     pool: &SqlitePool,
     client: &reqwest::Client,
@@ -1678,18 +1743,75 @@ async fn recover_pending_updates(
     .bind(bot_id)
     .execute(pool)
     .await?;
-    let rows: Vec<(i64, String)> = sqlx::query_as(
+    recover_pending_updates(module, pool, client, token, bot_id, ownership_guard).await
+}
+
+// Bounded due-work selection; the caller owns the bot and drains live batches.
+// last failure time is durable; retries back off by 2s then 4s, with three
+// total attempts. Exhausted rows stay visible as failed for manual inspection.
+async fn pending_inbox_batch(
+    pool: &SqlitePool,
+    bot_id: &str,
+    now_unix: i64,
+) -> AppResult<Vec<(i64, String)>> {
+    Ok(sqlx::query_as(
         "SELECT update_id, raw_update_json FROM telegram_updates
          WHERE bot_id = ? AND status IN ('received', 'failed') AND attempt_count < 3
-         ORDER BY update_id",
+           AND (attempt_count = 0 OR COALESCE(unixepoch(updated_at), 0)
+                + CASE WHEN attempt_count <= 1 THEN 2 ELSE 4 END <= ?)
+         ORDER BY update_id LIMIT 100",
     )
     .bind(bot_id)
+    .bind(now_unix)
     .fetch_all(pool)
+    .await?)
+}
+
+async fn recover_pending_updates(
+    module: &TelegramModule,
+    pool: &SqlitePool,
+    client: &reqwest::Client,
+    token: &str,
+    bot_id: &str,
+    ownership_guard: Option<&PollerOwnershipGuard>,
+) -> AppResult<()> {
+    let rows = pending_inbox_batch(
+        pool,
+        bot_id,
+        time::OffsetDateTime::now_utc().unix_timestamp(),
+    )
     .await?;
     for (update_id, raw) in rows {
-        let update: Value = serde_json::from_str(&raw).map_err(|err| {
-            AppError::internal(format!("invalid persisted telegram update: {err}"))
-        })?;
+        if let Some(guard) = ownership_guard {
+            guard.assert_valid().await.map_err(|_| {
+                AppError::conflict(
+                    "POLLER_OWNERSHIP_LOST",
+                    "inbox recovery ownership is no longer valid",
+                )
+            })?;
+        }
+        let update: Value = match serde_json::from_str(&raw) {
+            Ok(update) => update,
+            Err(_) => {
+                // Quarantine one poison row without blocking every later update.
+                sqlx::query(
+                    "UPDATE telegram_updates SET status = 'failed', attempt_count = 3,
+                     error_summary = 'TELEGRAM_INBOX_JSON_INVALID', updated_at = ?
+                     WHERE bot_id = ? AND update_id = ? AND status IN ('received', 'failed')",
+                )
+                .bind(now_rfc3339())
+                .bind(bot_id)
+                .bind(update_id)
+                .execute(pool)
+                .await?;
+                tracing::warn!(
+                    bot_id,
+                    update_id,
+                    "invalid inbox JSON exhausted; manual review required"
+                );
+                continue;
+            }
+        };
         if let Err(err) = process_and_deliver(
             module,
             pool,
@@ -1795,7 +1917,8 @@ async fn process_and_deliver(
     let claimed = sqlx::query(
         "UPDATE telegram_updates
          SET status = 'processing', attempt_count = attempt_count + 1, updated_at = ?
-         WHERE bot_id = ? AND update_id = ? AND status IN ('received', 'failed')",
+         WHERE bot_id = ? AND update_id = ? AND status IN ('received', 'failed')
+           AND attempt_count < 3",
     )
     .bind(now_rfc3339())
     .bind(bot_id)

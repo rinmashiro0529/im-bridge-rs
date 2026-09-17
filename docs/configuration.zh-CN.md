@@ -2,7 +2,15 @@
 
 [English](configuration.md)
 
-默认使用环境变量配置。也可通过 `--config` 提供 JSON 文件，其字段参见 `config.example.json`。
+默认使用环境变量配置。也可通过 `--config` 提供 JSON 文件，必需的顶层字段参见 `config.example.json`。
+
+## 配置来源与校验
+
+通过 `--config` 或 `IMBRIDGE_CONFIG` 选择文件后，文件对 `AppConfig` 字段具有决定权，**不会与对应环境变量合并**。例如，此时 `IMBRIDGE_ST_CONNECTOR_HMAC_KEY` 不会覆盖或补齐 JSON 中的 `st.connector_hmac_key`。需要通过环境注入凭据时，应使用纯环境变量配置；选择文件方式时，应通过受保护的文件提供完整配置。不要在命令行参数或版本库示例中填写真实凭据。
+
+省略整个 `st`、使用空对象 `st: {}`，或在部分 `st` 对象中省略 `mode`，均默认采用 `disabled`。显式填写空字符串或未知模式仍会报错。超时和会话有效期使用包含端点的范围校验，环境变量、JSON 和直接构造的 Rust 配置都通过 `validate()` 使用同一组限制。JSON 类型错误及未知字段仍被拒绝；非法启动配置在数据库或密钥初始化之前失败。
+
+上述来源规则针对 `AppConfig`，不改变 `IMBRIDGE_TELEGRAM_API_BASE` 等独立运行期环境开关。本次不新增生成空闲超时与硬超时之间的大小关系限制。
 
 ## 核心配置
 
@@ -23,7 +31,7 @@
 | `IMBRIDGE_ST_HANDLE` | `default-user` | SillyTavern 用户 handle。 |
 | `IMBRIDGE_ST_HOST_HEADER` | 未设置 | 仅用于可信本机反向代理。 |
 | `IMBRIDGE_ST_MODE` | `disabled` | `disabled`、`read_only`、`test_write`、`production_write`。 |
-| `IMBRIDGE_ST_CONNECTOR_HMAC_KEY` | 未设置 | 写入模式至少 32 字节，通过受保护环境文件或 secret manager 注入。 |
+| `IMBRIDGE_ST_CONNECTOR_HMAC_KEY` | 未设置 | 写入模式至少 32 字节；纯环境模式通过受保护环境文件或 secret manager 注入，使用 `--config` 时需在受保护 JSON 中提供对应字段。 |
 | `IMBRIDGE_ST_TIMEOUT_MS` | `15000` | 100–120000。 |
 | `IMBRIDGE_ST_GENERATE_HARD_TIMEOUT_MS` | `900000` | 1000–3600000。 |
 | `IMBRIDGE_ST_GENERATE_IDLE_TIMEOUT_MS` | `90000` | 1000–600000。 |
