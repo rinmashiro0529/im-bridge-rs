@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,12 +7,78 @@ use sqlx::SqlitePool;
 use tokio_util::sync::CancellationToken;
 use wiremock::{matchers::method, matchers::path, Mock, MockServer, ResponseTemplate};
 
+use crate::modules::bridge::poller_ownership::{
+    PollerError, PollerOwner, PollerOwnershipGuard, PollerOwnershipRecord, PollerOwnershipRegistry,
+    PollerRuntimeBinding,
+};
+
 use super::{
     pending_inbox_batch, persist_update_batch, poll_telegram_bot_at, process_and_deliver,
     recover_pending_updates, TelegramModule,
 };
 
 const BOT: &str = "inbox-test-bot";
+const NUMERIC_BOT_ID: i64 = 123;
+
+#[derive(Default)]
+struct LoseOwnershipAfterFirstFence {
+    assertions: AtomicUsize,
+    releases: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl PollerOwnershipRegistry for LoseOwnershipAfterFirstFence {
+    async fn get_ownership(
+        &self,
+        telegram_bot_id: i64,
+    ) -> Result<Option<PollerOwnershipRecord>, PollerError> {
+        Ok(Some(PollerOwnershipRecord {
+            telegram_bot_id,
+            owner: PollerOwner::RustBridge,
+            epoch: 1,
+        }))
+    }
+
+    async fn assert_can_start(
+        &self,
+        _telegram_bot_id: i64,
+        _runtime_owner: PollerOwner,
+        _runtime_epoch: u64,
+    ) -> Result<(), PollerError> {
+        Ok(())
+    }
+
+    async fn assert_fence(
+        &self,
+        _telegram_bot_id: i64,
+        _owner: PollerOwner,
+        _binding: &PollerRuntimeBinding,
+    ) -> Result<(), PollerError> {
+        if self.assertions.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(())
+        } else {
+            Err(PollerError::NotOwner)
+        }
+    }
+
+    async fn heartbeat(
+        &self,
+        _telegram_bot_id: i64,
+        _owner: PollerOwner,
+        _epoch: u64,
+    ) -> Result<(), PollerError> {
+        Ok(())
+    }
+
+    async fn release_runtime(
+        &self,
+        _telegram_bot_id: i64,
+        _runtime_instance_id: &str,
+    ) -> Result<(), PollerError> {
+        self.releases.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
 
 async fn state(pool: &SqlitePool, id: i64) -> (String, i64) {
     sqlx::query_as(
@@ -266,4 +332,52 @@ async fn failed_inbox_recovers_in_the_same_poller_with_no_new_updates() {
     assert!(!requests
         .iter()
         .any(|r| r.url.path().ends_with("/sendMessage")));
+}
+
+#[tokio::test]
+async fn ownership_loss_after_online_recovery_stops_before_get_updates_and_cleans_up() {
+    let (_dir, pool) = super::inbox_offset_tests::fixture().await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"ok": true, "result": {"id": NUMERIC_BOT_ID, "username": "synthetic_bot"}}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/botsynthetic/getUpdates"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true, "result": []})))
+        .mount(&server)
+        .await;
+
+    let registry = Arc::new(LoseOwnershipAfterFirstFence::default());
+    let binding = PollerRuntimeBinding::new(BOT, "runtime-ownership-loss", 1).running();
+    let guard = PollerOwnershipGuard::new_with_binding(
+        NUMERIC_BOT_ID,
+        PollerOwner::RustBridge,
+        binding,
+        registry.clone(),
+    );
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        poll_telegram_bot_at(
+            TelegramModule::new(pool.clone()),
+            pool,
+            BOT.into(),
+            "synthetic".into(),
+            CancellationToken::new(),
+            Some(guard),
+            server.uri(),
+        ),
+    )
+    .await
+    .expect("ownership loss must stop the poller without waiting for cancellation");
+    result.unwrap();
+
+    assert!(registry.assertions.load(Ordering::SeqCst) >= 2);
+    assert_eq!(registry.releases.load(Ordering::SeqCst), 1);
+    let requests = server.received_requests().await.unwrap();
+    assert!(!requests
+        .iter()
+        .any(|request| request.method.as_str() == "GET"));
 }

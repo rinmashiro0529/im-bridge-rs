@@ -28,7 +28,8 @@ page. Malformed JSON is quarantined as failed with an explicit code and exhauste
 budget so one damaged row cannot prevent later rows from progressing. Persisted
 rows and error codes remain inspectable; no automatic destructive cleanup occurs.
 
-Ownership is checked before each replay. Per-chat locks, operation identity,
+Ownership is checked before each replay and revalidated after online recovery,
+immediately before the next getUpdates request. Per-chat locks, operation identity,
 external delivery ledgers, CAS and the commit-before-offset publication order are
 retained. This is not a claim of distributed exactly-once delivery. Panicked
 processing rows and indeterminate external effects still require the existing

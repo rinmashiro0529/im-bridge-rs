@@ -1325,6 +1325,20 @@ async fn poll_telegram_bot_at(
             next_inbox_recovery_at =
                 tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         }
+        // Ownership can change while recovery awaits storage or delivery work.
+        // Revalidate immediately before the next network poll so a stale owner
+        // never consumes another Telegram batch after detecting the takeover.
+        if let Some(guard) = ownership_guard.as_ref() {
+            if let Err(err) = guard.assert_valid().await {
+                tracing::warn!(
+                    bot_id,
+                    numeric_bot_id = guard.numeric_bot_id,
+                    error = %err,
+                    "poller ownership lost after inbox recovery; cancelling getUpdates"
+                );
+                break;
+            }
+        }
         let url = format!("{api_base}/bot{token}/getUpdates");
         let offset_text = offset.to_string();
         let response = tokio::select! {
