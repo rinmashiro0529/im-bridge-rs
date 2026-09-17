@@ -172,9 +172,11 @@ async fn provision(fixture: &Fixture, mode: Provisioning) -> im_bridge::AppResul
                 .bootstrap_admin("new-user", PASSWORD, "New User")
                 .await
         }
-        Provisioning::Create => identity
-            .create_account(&fixture.admin, "new-user", PASSWORD, "New User", false)
-            .await,
+        Provisioning::Create => {
+            identity
+                .create_account(&fixture.admin, "new-user", PASSWORD, "New User", false)
+                .await
+        }
         Provisioning::Import => identity
             .ensure_legacy_account("new-user", "New User")
             .await
@@ -233,7 +235,11 @@ async fn every_provisioning_entry_rolls_back_each_insert_failure_and_can_retry()
                     assert!(!account.is_system_admin);
                     assert_eq!(
                         defaults,
-                        ("New User".into(), "New User".into(), "legacy_bridge_v1".into())
+                        (
+                            "New User".into(),
+                            "New User".into(),
+                            "legacy_bridge_v1".into()
+                        )
                     );
                 }
             }
@@ -282,7 +288,13 @@ async fn authorization_reloads_account_status_and_admin_role_from_storage() {
             .unwrap();
         let error = state
             .identity
-            .create_account(&fixture.admin, "forbidden-user", PASSWORD, "Forbidden", false)
+            .create_account(
+                &fixture.admin,
+                "forbidden-user",
+                PASSWORD,
+                "Forbidden",
+                false,
+            )
             .await
             .unwrap_err();
         assert_eq!(error.status, StatusCode::FORBIDDEN);
@@ -368,7 +380,11 @@ async fn disabled_admins_and_members_are_denied_on_http_and_bound_telegram_paths
                 .await
                 .unwrap()
         };
-        let bot = state.telegram.upsert_bot(&actor, None, false).await.unwrap();
+        let bot = state
+            .telegram
+            .upsert_bot(&actor, None, false)
+            .await
+            .unwrap();
         let code = state
             .telegram
             .generate_bind_code(&bot.id, &actor.account.id)
