@@ -3,7 +3,6 @@ use std::sync::Arc;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{AppError, AppResult};
@@ -11,18 +10,11 @@ use crate::modules::bridge::operation_store::OperationStore;
 use crate::modules::bridge::operations::{EncryptedOperationPayload, OperationAad};
 use crate::seams::secret_vault::SecretVault;
 
+pub use crate::domain::locator::locator_hash;
+
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 24;
 const OPERATION_DEK_KIND: &str = "operation_dek_v1";
-
-pub fn locator_hash(handle: &str, avatar: &str, chat_file: &str) -> String {
-    let mut encoded = Vec::new();
-    for part in [handle, avatar, chat_file] {
-        encoded.extend_from_slice(&(part.len() as u64).to_be_bytes());
-        encoded.extend_from_slice(part.as_bytes());
-    }
-    hex::encode(Sha256::digest(&encoded))
-}
 
 struct OperationDek(Zeroizing<[u8; KEY_LEN]>);
 

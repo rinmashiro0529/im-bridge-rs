@@ -12,21 +12,13 @@ use crate::modules::chat::prompt::{
     sanitize_compression, COMPRESSION_SYSTEM_PROMPT,
 };
 
+pub use crate::domain::locator::locator_hash;
+
 const RECENT_LIMIT: usize = 24;
 pub const COMPRESS_KEEP_RECENT: usize = 15;
 
 pub fn message_sha256(value: &Value) -> String {
     let encoded = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
-    hex::encode(Sha256::digest(encoded))
-}
-
-pub fn locator_hash(handle: &str, avatar: &str, chat_file: &str) -> String {
-    let mut encoded = Vec::new();
-    for part in [handle, avatar, chat_file] {
-        let bytes = part.as_bytes();
-        encoded.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-        encoded.extend_from_slice(bytes);
-    }
     hex::encode(Sha256::digest(encoded))
 }
 
