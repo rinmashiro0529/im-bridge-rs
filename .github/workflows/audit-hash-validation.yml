@@ -1,0 +1,81 @@
+name: Audit locator hash validation
+
+on:
+  push:
+    branches: [audit-work/hash-verification-20260917]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Initialize isolated working paths
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/audit-hash-target" >> "$GITHUB_ENV"
+          echo "CANDIDATE=$RUNNER_TEMP/audit-hash-candidate" >> "$GITHUB_ENV"
+      - name: Add compatibility tests to the unchanged production baseline
+        run: |
+          git worktree add --detach "$CANDIDATE" 01d4fb24503adc74508c8a6e3b35facf05cc204b
+          python3 .github/audit-work/hash_driver.py prepare "$CANDIDATE"
+      - name: Verify golden vectors and existing payload tests before refactoring
+        run: |
+          cd "$CANDIDATE"
+          cargo test --locked --test locator_hash_contract --test st_hash_parity --test operation_payload
+      - name: Measure the original release executable
+        run: |
+          cd "$CANDIDATE"
+          cargo build --release --locked
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/hash_driver.py" measure-baseline "$CANDIDATE"
+      - name: Apply the shared protocol implementation
+        run: python3 .github/audit-work/hash_driver.py fix "$CANDIDATE"
+      - name: Confirm the tests detect byte-length and endianness regressions
+        run: python3 .github/audit-work/hash_driver.py mutations "$CANDIDATE"
+      - name: Format and check the final candidate
+        run: |
+          cd "$CANDIDATE"
+          cargo fmt --all
+          cargo fmt --all --check
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/hash_driver.py" allowlist "$CANDIDATE"
+          git diff --check
+          python3 scripts/publication_gate.py
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Run the complete default-feature test suite
+        run: |
+          cd "$CANDIDATE"
+          cargo test --all --locked
+      - name: Measure the candidate with the same release profile
+        run: |
+          cd "$CANDIDATE"
+          cargo build --release --locked
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/hash_driver.py" measure-candidate "$CANDIDATE"
+      - name: Publish only the validated candidate branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$CANDIDATE"
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/hash_driver.py" allowlist "$CANDIDATE"
+          git add -- src/domain/mod.rs src/domain/locator.rs src/modules/bridge/st_ops.rs src/modules/bridge/operation_payload.rs tests/locator_hash_contract.rs docs/locator-hash-compatibility.md
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'refactor(bridge): share canonical locator hashing without changing public paths'
+          test "$(git rev-parse HEAD^)" = 01d4fb24503adc74508c8a6e3b35facf05cc204b
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          printf '::add-mask::%s\n' "$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push https://github.com/rinmashiro0529/im-bridge-rs.git HEAD:refs/heads/audit/canonical-locator-hash
+          {
+            echo '## Validated candidate'
+            echo "Commit: $(git rev-parse HEAD)"
+            echo '```'
+            git show --stat --oneline HEAD
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
