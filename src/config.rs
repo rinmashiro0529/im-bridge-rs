@@ -6,6 +6,11 @@ use serde::Deserialize;
 
 use crate::error::{AppError, AppResult};
 
+const ST_TIMEOUT_RANGE: (u64, u64) = (100, 120_000);
+const ST_HARD_TIMEOUT_RANGE: (u64, u64) = (1_000, 3_600_000);
+const ST_IDLE_TIMEOUT_RANGE: (u64, u64) = (1_000, 600_000);
+const SESSION_TTL_RANGE: (i64, i64) = (1, 168);
+
 #[derive(Debug, Clone, Parser)]
 #[command(name = "im-bridge", about = "Telegram-to-SillyTavern sidecar service")]
 pub struct Cli {
@@ -94,7 +99,7 @@ pub struct StClientConfig {
     pub generate_hard_timeout_ms: u64,
     #[serde(default = "default_st_generate_idle_timeout_ms")]
     pub generate_idle_timeout_ms: u64,
-    #[serde(default)]
+    #[serde(default = "default_st_mode")]
     pub mode: String,
     #[serde(default)]
     pub connector_hmac_key: Option<String>,
@@ -102,6 +107,10 @@ pub struct StClientConfig {
 
 fn default_st_handle() -> String {
     "default-user".into()
+}
+
+fn default_st_mode() -> String {
+    "disabled".into()
 }
 
 fn default_st_timeout_ms() -> u64 {
@@ -125,7 +134,7 @@ impl Default for StClientConfig {
             timeout_ms: default_st_timeout_ms(),
             generate_hard_timeout_ms: default_st_generate_hard_timeout_ms(),
             generate_idle_timeout_ms: default_st_generate_idle_timeout_ms(),
-            mode: "disabled".into(),
+            mode: default_st_mode(),
             connector_hmac_key: None,
         }
     }
@@ -150,19 +159,20 @@ impl StClientConfig {
                 config.host_header = Some(value.trim().to_string());
             }
         }
-        config.timeout_ms =
-            parse_env_u64("IMBRIDGE_ST_TIMEOUT_MS", config.timeout_ms, 100, 120_000)?;
-        config.generate_hard_timeout_ms = parse_env_u64(
+        config.timeout_ms = parse_env_number(
+            "IMBRIDGE_ST_TIMEOUT_MS",
+            config.timeout_ms,
+            ST_TIMEOUT_RANGE,
+        )?;
+        config.generate_hard_timeout_ms = parse_env_number(
             "IMBRIDGE_ST_GENERATE_HARD_TIMEOUT_MS",
             config.generate_hard_timeout_ms,
-            1_000,
-            3_600_000,
+            ST_HARD_TIMEOUT_RANGE,
         )?;
-        config.generate_idle_timeout_ms = parse_env_u64(
+        config.generate_idle_timeout_ms = parse_env_number(
             "IMBRIDGE_ST_GENERATE_IDLE_TIMEOUT_MS",
             config.generate_idle_timeout_ms,
-            1_000,
-            600_000,
+            ST_IDLE_TIMEOUT_RANGE,
         )?;
         if let Ok(value) = std::env::var("IMBRIDGE_ST_MODE") {
             config.mode = value;
@@ -205,6 +215,23 @@ impl StClientConfig {
                 ));
             }
         }
+        // All construction paths, including JSON and direct Rust callers, use
+        // the same inclusive limits as environment parsing.
+        for (name, value, range) in [
+            ("IMBRIDGE_ST_TIMEOUT_MS", self.timeout_ms, ST_TIMEOUT_RANGE),
+            (
+                "IMBRIDGE_ST_GENERATE_HARD_TIMEOUT_MS",
+                self.generate_hard_timeout_ms,
+                ST_HARD_TIMEOUT_RANGE,
+            ),
+            (
+                "IMBRIDGE_ST_GENERATE_IDLE_TIMEOUT_MS",
+                self.generate_idle_timeout_ms,
+                ST_IDLE_TIMEOUT_RANGE,
+            ),
+        ] {
+            bounded_number(name, Some(value), range)?;
+        }
         Ok(())
     }
 
@@ -230,39 +257,28 @@ fn parse_env_bool(name: &str, default: bool) -> AppResult<bool> {
     }
 }
 
-fn parse_env_u64(name: &str, default: u64, min: u64, max: u64) -> AppResult<u64> {
-    match std::env::var(name) {
-        Ok(value) => value
-            .parse::<u64>()
-            .ok()
-            .filter(|value| (*value >= min) && (*value <= max))
-            .ok_or_else(|| {
-                AppError::bad_request(
-                    "CONFIG_INVALID",
-                    format!("{name} must be between {min} and {max}"),
-                )
-            }),
-        Err(std::env::VarError::NotPresent) => Ok(default),
-        Err(std::env::VarError::NotUnicode(_)) => Err(AppError::bad_request(
-            "CONFIG_INVALID",
-            format!("{name} is not valid UTF-8"),
-        )),
-    }
+fn bounded_number<T: PartialOrd + std::fmt::Display>(
+    name: &str,
+    value: Option<T>,
+    range: (T, T),
+) -> AppResult<T> {
+    value
+        .filter(|value| *value >= range.0 && *value <= range.1)
+        .ok_or_else(|| {
+            AppError::bad_request(
+                "CONFIG_INVALID",
+                format!("{name} must be between {} and {}", range.0, range.1),
+            )
+        })
 }
 
-fn parse_env_i64(name: &str, default: i64, min: i64, max: i64) -> AppResult<i64> {
+fn parse_env_number<T>(name: &str, default: T, range: (T, T)) -> AppResult<T>
+where
+    T: std::str::FromStr + PartialOrd + std::fmt::Display,
+{
     match std::env::var(name) {
-        Ok(value) => value
-            .parse::<i64>()
-            .ok()
-            .filter(|value| (*value >= min) && (*value <= max))
-            .ok_or_else(|| {
-                AppError::bad_request(
-                    "CONFIG_INVALID",
-                    format!("{name} must be between {min} and {max}"),
-                )
-            }),
-        Err(std::env::VarError::NotPresent) => Ok(default),
+        Ok(value) => bounded_number(name, value.parse().ok(), range),
+        Err(std::env::VarError::NotPresent) => bounded_number(name, Some(default), range),
         Err(std::env::VarError::NotUnicode(_)) => Err(AppError::bad_request(
             "CONFIG_INVALID",
             format!("{name} is not valid UTF-8"),
@@ -309,12 +325,7 @@ impl AppConfig {
                 "cookie_secure must be true when IMBRIDGE_LISTEN is not a loopback address",
             ));
         }
-        if self.session_ttl_hours < 1 || self.session_ttl_hours > 168 {
-            return Err(AppError::bad_request(
-                "CONFIG_INVALID",
-                "session_ttl_hours must be between 1 and 168",
-            ));
-        }
+        bounded_number("session_ttl_hours", Some(self.session_ttl_hours), SESSION_TTL_RANGE)?;
         self.st.validate()
     }
 
@@ -354,7 +365,7 @@ impl AppConfig {
                 std::env::var("IMBRIDGE_MASTER_KEY_PATH")
                     .unwrap_or_else(|_| "./master.key".to_string()),
             ),
-            session_ttl_hours: parse_env_i64("IMBRIDGE_SESSION_TTL_HOURS", 12, 1, 168)?,
+            session_ttl_hours: parse_env_number("IMBRIDGE_SESSION_TTL_HOURS", 12, SESSION_TTL_RANGE)?,
             cookie_secure: parse_env_bool("IMBRIDGE_COOKIE_SECURE", true)?,
             data_dir,
             st: StClientConfig::from_env()?,
