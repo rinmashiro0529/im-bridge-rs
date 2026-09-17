@@ -33,6 +33,9 @@ pub mod panel;
 pub mod panel_store;
 pub mod stream;
 
+#[cfg(test)]
+mod inbox_offset_tests;
+
 const CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const CODE_LENGTH: usize = 6;
 
@@ -1410,6 +1413,7 @@ async fn persist_update_batch(
     let now = now_rfc3339();
     let mut tx = pool.begin().await?;
     let mut persisted = Vec::new();
+    let mut candidate_offset = *offset;
     for update in updates {
         let Some(update_id) = update.get("update_id").and_then(Value::as_i64) else {
             continue;
@@ -1464,7 +1468,7 @@ async fn persist_update_batch(
         let next_offset = update_id.checked_add(1).ok_or_else(|| {
             AppError::bad_request("TELEGRAM_UPDATE_ID_INVALID", "Telegram update id overflow")
         })?;
-        *offset = (*offset).max(next_offset);
+        candidate_offset = candidate_offset.max(next_offset);
     }
     sqlx::query(
         "INSERT INTO telegram_bot_offsets (bot_id, next_offset, updated_at)
@@ -1474,11 +1478,13 @@ async fn persist_update_batch(
             updated_at = excluded.updated_at",
     )
     .bind(bot_id)
-    .bind(*offset)
+    .bind(candidate_offset)
     .bind(&now)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    // Publish only after both inbox rows and the durable offset have committed.
+    *offset = candidate_offset;
     Ok(persisted)
 }
 
