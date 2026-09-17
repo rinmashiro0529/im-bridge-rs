@@ -222,7 +222,7 @@ impl Fixture {
 
 fn assert_error(result: AppResult<OperationRecoveryPayload>, code: &str, status: u16, message: &str) {
     let error: AppError = result.expect_err("recovery must fail closed");
-    assert_eq!((error.code.as_str(), error.status.as_u16(), error.message.as_str()), (code, status, message));
+    assert_eq!((error.code, error.status.as_u16(), error.message.as_str()), (code, status, message));
 }
 
 #[tokio::test]
