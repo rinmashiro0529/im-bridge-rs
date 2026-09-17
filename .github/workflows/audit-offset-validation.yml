@@ -1,0 +1,70 @@
+name: Audit offset validation
+
+on:
+  push:
+    branches: [audit-work/offset-verification-20260917]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_DIR: ${{ runner.temp }}/audit-cargo-target
+      CANDIDATE: ${{ runner.temp }}/audit-offset-candidate
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare isolated candidate from the audited commit
+        run: |
+          git worktree add --detach "$CANDIDATE" 01d4fb24503adc74508c8a6e3b35facf05cc204b
+          python3 .github/audit-work/offset_driver.py prepare "$CANDIDATE"
+      - name: Prove the original implementation fails the four regression cases
+        run: python3 .github/audit-work/offset_driver.py red "$CANDIDATE"
+      - name: Apply the minimal offset publication fix
+        run: python3 .github/audit-work/offset_driver.py fix "$CANDIDATE"
+      - name: Format candidate and verify the change allowlist
+        run: |
+          cd "$CANDIDATE"
+          cargo fmt --all
+          cargo fmt --all --check
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/offset_driver.py" allowlist "$CANDIDATE"
+          git diff --check
+          python3 scripts/publication_gate.py
+      - name: Clippy including test-only features
+        run: cargo clippy --manifest-path "$CANDIDATE/Cargo.toml" --all-targets --all-features --locked -- -D warnings
+      - name: Run the complete default-feature test suite
+        run: |
+          cd "$CANDIDATE"
+          cargo test --all --locked
+      - name: Build the unchanged release profile
+        run: cargo build --manifest-path "$CANDIDATE/Cargo.toml" --release --locked
+      - name: Publish only the validated candidate branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$CANDIDATE"
+          python3 "$GITHUB_WORKSPACE/.github/audit-work/offset_driver.py" allowlist "$CANDIDATE"
+          git add -- src/modules/telegram/mod.rs src/modules/telegram/inbox_offset_tests.rs docs/inbox-offset-atomicity.md
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix(telegram): publish polling offset only after inbox commit'
+          test "$(git rev-parse HEAD^)" = 01d4fb24503adc74508c8a6e3b35facf05cc204b
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          printf '::add-mask::%s\n' "$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push https://github.com/rinmashiro0529/im-bridge-rs.git HEAD:refs/heads/audit/inbox-offset-atomicity
+          {
+            echo '## Validated candidate'
+            echo "Commit: $(git rev-parse HEAD)"
+            echo 'Baseline regression: four expected failures; candidate: complete default tests, Clippy, formatting, publication gate and release build passed.'
+            echo 'No production network services, release settings, dependency policies or main-branch files were changed.'
+            echo '```'
+            git show --stat --oneline HEAD
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
