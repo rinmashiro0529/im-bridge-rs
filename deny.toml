@@ -3,9 +3,6 @@ targets = ["x86_64-unknown-linux-gnu"]
 all-features = true
 
 [advisories]
-# Transitive via teloxide -> aquamarine. RUSTSEC marks it unmaintained, not
-# vulnerable, and provides no safe upgrade. Revisit when teloxide removes it.
-ignore = ["RUSTSEC-2026-0173"]
 
 [licenses]
 confidence-threshold = 0.8
