@@ -54,10 +54,14 @@ mod tls {
         let dir = tempfile::tempdir().unwrap();
         let key = dir.path().join("ephemeral.key");
         let cert = dir.path().join("ephemeral.crt");
+        // Generate a server end-entity certificate, not OpenSSL's default CA.
         // Per-execution test key material is removed with TempDir.
         let generated = Command::new("openssl").args([
             "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
             "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost",
+            "-addext", "basicConstraints=critical,CA:FALSE",
+            "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
+            "-addext", "extendedKeyUsage=serverAuth",
         ]).arg("-keyout").arg(&key).arg("-out").arg(&cert)
             .stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
         assert!(generated.success(), "test certificate creation failed");
@@ -86,9 +90,11 @@ mod tls {
         let url = format!("https://localhost:{}/", address.port());
         let unknown = client(false).get(&url).send().await.unwrap_err();
         assert!(unknown.is_connect() && !unknown.is_timeout());
+        assert!(format!("{unknown:?}").contains("UnknownIssuer"), "{unknown:?}");
         let wrong_name = client(true).get(format!("https://wrong.example.invalid:{}/", address.port()))
             .send().await.unwrap_err();
         assert!(wrong_name.is_connect() && !wrong_name.is_timeout());
+        assert!(format!("{wrong_name:?}").contains("NotValidForName"), "{wrong_name:?}");
         // A successful control after the negatives rules out a dead server.
         let response = client(true).get(url).send().await.unwrap();
         assert!(response.status().is_success());
