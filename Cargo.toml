@@ -31,7 +31,7 @@ crc32fast = "1"
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
-argon2 = "0.5"
+argon2 = "0.6"
 password-hash = { version = "0.5", features = ["std"] }
 rand = "0.8"
 # Preserve the TLS root sources and multipart support previously unified through teloxide.
