@@ -30,7 +30,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 crc32fast = "1"
 futures-util = "0.3"
 hex = "0.4"
-hmac = "0.12"
+hmac = "0.13"
 argon2 = "0.5"
 password-hash = { version = "0.5", features = ["std"] }
 rand = "0.8"
@@ -41,7 +41,7 @@ rust-embed = "8"
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sha2 = "0.10"
+sha2 = "0.11"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "json"] }
 subtle = "2"
 thiserror = "2"
